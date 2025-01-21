@@ -466,8 +466,13 @@ async def process_patient(
         print(f"Ошибка: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/compare-face/")
 async def compare_face(file: UploadFile = File(...)):
+    """
+    API для загрузки фотографии и сравнения с известными эмбеддингами.
+    Возвращает статус (true/false) в зависимости от порога схожести.
+    """
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Загруженный файл не является изображением.")
 
@@ -478,7 +483,7 @@ async def compare_face(file: UploadFile = File(...)):
 
         # Получение эмбеддинга загруженного изображения
         start_time = time.time()
-        unknown_face_encodings = face_recognition.face_encodings(unknown_image, num_jitters=3)
+        unknown_face_encodings = face_recognition.face_encodings(unknown_image, num_jitters=1)
         if not unknown_face_encodings:
             raise HTTPException(status_code=400, detail="Лицо на изображении не найдено.")
         unknown_face_encoding = unknown_face_encodings[0]
@@ -486,17 +491,24 @@ async def compare_face(file: UploadFile = File(...)):
 
         # Сравнение с известными эмбеддингами
         results = []
-        comparison_start = time.time()
         for known_encoding in known_embeddings:
             distance = face_recognition.face_distance([known_encoding], unknown_face_encoding)[0]
             similarity_percentage = (1 - distance) * 100
             results.append(similarity_percentage)
-       
+
         max_similarity = max(results) if results else 0.0
 
+        # Установка порога
+        threshold = 55.0
+        status = max_similarity >= threshold
+
+        # Преобразование статуса в стандартный тип Python
+        status = bool(status)
+
         return {
+            "status": status,
             "similarity_percentage": f"{max_similarity:.2f}%",
-            "embedding_time": f"{embedding_time:.2f} seconds",
+            "embedding_time": f"{embedding_time:.2f} seconds"
         }
 
     except Exception as e:
