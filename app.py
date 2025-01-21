@@ -373,7 +373,7 @@ DB_HOST = "localhost"
 DB_USER = "postgres"
 DB_PASSWORD = "123456"
 DB_NAME = "face_db"
-DB_PORT = 5432
+DB_PORT = 5433
 
 # Функция для сохранения данных в базу PostgreSQL
 def save_to_database(patient_id, hospital_id, branch_id, palata_id, image_path, emb_path):
