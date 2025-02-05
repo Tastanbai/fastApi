@@ -13,27 +13,12 @@ from face_save import extract_and_save_faces
 from save_emb import save_embedding_to_file
 from auth import router as auth_router, get_current_user
 from register import router as register_router
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
 app.include_router(auth_router)
 app.include_router(register_router)
 
-origins = [
-    "http://localhost:7059",
-    "https://localhost:7059",  # React/Vue/Angular на локальном сервере
-    "https://face.tabet-kitap.kz",
-]
-
-# Добавляем CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,  # Какие источники разрешены
-    allow_credentials=True,  # Разрешить куки и заголовки авторизации
-    allow_methods=["*"],  # Разрешить все методы (GET, POST, PUT, DELETE и т.д.)
-    allow_headers=["*"],  # Разрешить все заголовки
-)
 
 OUTPUT_FOLDER = "faces_folder"
 EMB_FOLDER = "emb"
