@@ -21,7 +21,8 @@ app.include_router(auth_router)
 app.include_router(register_router)
 
 origins = [
-    "http://localhost:7059",  # React/Vue/Angular на локальном сервере
+    "http://localhost:7059",
+    "https://localhost:7059",  # React/Vue/Angular на локальном сервере
     "https://face.tabet-kitap.kz",
 ]
 
