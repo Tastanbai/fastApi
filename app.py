@@ -35,31 +35,63 @@ DB_CONFIG = {
 
 # Глобальная переменная для эмбеддингов
 known_embeddings = []
+known_patients = []
 
-# Функция загрузки эмбеддингов (вызывается при каждом новом пациенте)
+# 🔥 Функция загрузки эмбеддингов и patient_id из БД
 def load_embeddings_from_database():
-    global known_embeddings
+    global known_embeddings, known_patients
     embeddings = []
+    patients = []
+
     try:
         with mysql.connector.connect(**DB_CONFIG) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT emb_path FROM faces")
+                cursor.execute("SELECT patient_id, emb_path FROM faces")
                 results = cursor.fetchall()
 
         for row in results:
-            emb_file = row[0]
+            patient_id, emb_file = row
             if os.path.exists(emb_file):
                 with open(emb_file, "rb") as file:
                     embeddings.append(pickle.load(file))
+                    patients.append(patient_id)
             else:
                 print(f"⚠️ Файл {emb_file} отсутствует, пропускаем...")
+
     except mysql.connector.Error as e:
         print(f"❌ Ошибка при загрузке эмбеддингов из БД: {e}")
-    
-    known_embeddings = embeddings  # Обновляем глобальный список
+
+    known_embeddings = embeddings  # Обновляем глобальный список эмбеддингов
+    known_patients = patients  # Обновляем список patient_id
 
 # 🔥 Загружаем эмбеддинги при старте сервера
 load_embeddings_from_database()
+
+
+# # Функция загрузки эмбеддингов (вызывается при каждом новом пациенте)
+# def load_embeddings_from_database():
+#     global known_embeddings
+#     embeddings = []
+#     try:
+#         with mysql.connector.connect(**DB_CONFIG) as conn:
+#             with conn.cursor() as cursor:
+#                 cursor.execute("SELECT emb_path FROM faces")
+#                 results = cursor.fetchall()
+
+#         for row in results:
+#             emb_file = row[0]
+#             if os.path.exists(emb_file):
+#                 with open(emb_file, "rb") as file:
+#                     embeddings.append(pickle.load(file))
+#             else:
+#                 print(f"⚠️ Файл {emb_file} отсутствует, пропускаем...")
+#     except mysql.connector.Error as e:
+#         print(f"❌ Ошибка при загрузке эмбеддингов из БД: {e}")
+    
+#     known_embeddings = embeddings  # Обновляем глобальный список
+
+# # 🔥 Загружаем эмбеддинги при старте сервера
+# load_embeddings_from_database()
 
 # 📌 API для добавления пациента и АВТОМАТИЧЕСКОГО ОБНОВЛЕНИЯ эмбеддингов
 @app.post("/process-patient/")
@@ -261,4 +293,60 @@ async def compare_face(
         "similarity_percentage": float(similarity_percentage),
         "comparison_time": f"{comparison_time:.2f} seconds",
         "total_execution_time": f"{total_execution_time:.2f} seconds"  # Полное время выполнения
+    }
+
+# 🔹 API для сравнения лиц с базой
+@app.post("/compare-face-qr/")
+async def compare_face_with_db(file: UploadFile = File(...),
+                               user: dict = Depends(get_current_user)):
+    total_start_time = time.time()
+
+    # Проверяем, загружены ли эмбеддинги
+    if not known_embeddings or not known_patients:
+        raise HTTPException(status_code=500, detail="База эмбеддингов не загружена.")
+
+    # Загружаем фото и уменьшаем размер
+    content = await file.read()
+    unknown_image = face_recognition.load_image_file(BytesIO(content))
+    small_unknown_image = np.array(unknown_image[::2, ::2, :])
+
+    # Извлекаем эмбеддинг загруженного лица
+    comparison_start_time = time.time()
+    unknown_face_encodings = face_recognition.face_encodings(small_unknown_image)
+
+    if not unknown_face_encodings:
+        raise HTTPException(status_code=400, detail="Лицо не найдено.")
+
+    unknown_face_encoding = unknown_face_encodings[0]
+
+    # Преобразуем список эмбеддингов в NumPy массив
+    known_embeddings_array = np.array(known_embeddings, dtype=np.float32)
+
+    # Сравнение лиц
+    distances = face_recognition.face_distance(known_embeddings_array, unknown_face_encoding)
+    min_index = np.argmin(distances)  # Индекс минимального расстояния
+    min_distance = distances[min_index]
+
+    similarity_percentage = (1 - min_distance) * 100
+    status = bool(similarity_percentage >= 55.0)
+    patient_id = known_patients[min_index] if status else None
+
+    comparison_time = time.time() - comparison_start_time
+    total_execution_time = time.time() - total_start_time
+
+    # Если лицо распознано, записываем в БД
+    if status:
+        try:
+            with mysql.connector.connect(**DB_CONFIG) as conn:
+                with conn.cursor() as cursor:
+                    insert_query = "INSERT INTO QR (status, patient_id) VALUES (%s, %s)"
+                    cursor.execute(insert_query, (status, patient_id))
+                    conn.commit()
+        except mysql.connector.Error as e:
+            print(f"❌ Ошибка записи в БД: {e}")
+
+    return {
+        "status": status,
+        "patient_id": patient_id,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if status else None,
     }
