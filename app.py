@@ -13,8 +13,11 @@ from face_save import extract_and_save_faces
 from save_emb import save_embedding_to_file
 from auth import router as auth_router, get_current_user
 from register import router as register_router
+from fastapi import Request
+import json
 
 app = FastAPI()
+
 
 app.include_router(auth_router)
 app.include_router(register_router)
@@ -32,6 +35,23 @@ DB_CONFIG = {
     "database": "face_db",
     "port": 3306
 }
+
+
+async def check_permission(user: dict, request):
+    """ Проверяет доступ пользователя к API """
+    
+    allowed_api_str = user.get("allowed_api", "[]")  # Получаем строку
+    try:
+        allowed_api = json.loads(allowed_api_str)  # Конвертируем JSON в список
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Ошибка в формате данных API")
+
+    api_name = request.scope["path"].strip("/")  
+
+    if "*" in allowed_api or api_name in allowed_api:
+        return  
+
+    raise HTTPException(status_code=403, detail=f"У вас нет доступа к API {api_name}")
 
 # Глобальная переменная для эмбеддингов
 known_embeddings = []
@@ -67,7 +87,6 @@ def load_embeddings_from_database():
 # 🔥 Загружаем эмбеддинги при старте сервера
 load_embeddings_from_database()
 
-
 # # Функция загрузки эмбеддингов (вызывается при каждом новом пациенте)
 # def load_embeddings_from_database():
 #     global known_embeddings
@@ -96,13 +115,17 @@ load_embeddings_from_database()
 # 📌 API для добавления пациента и АВТОМАТИЧЕСКОГО ОБНОВЛЕНИЯ эмбеддингов
 @app.post("/process-patient/")
 async def process_patient(
+    request: Request,
     patient_id: str = Form(...),
     hospital_id: str = Form(...),
     branch_id: str = Form(...),
     palata_id: str = Form(...),
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user)
-):
+    user: dict = Depends(get_current_user),
+    ):
+
+    await check_permission(user, request)
+
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     emb_folder = "emb"
 
@@ -154,9 +177,12 @@ async def process_patient(
 # 📌 API для сравнения лиц
 @app.post("/compare-face/")
 async def compare_face(
+    request: Request,
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user)
-):
+    user: dict = Depends(get_current_user),
+    ):
+    
+    await check_permission(user, request)
     
     content = await file.read()
     unknown_image = face_recognition.load_image_file(BytesIO(content))
@@ -188,13 +214,19 @@ async def compare_face(
 
 @app.post("/process-patient-base64/")
 async def process_patient_base64(
+    request: Request,
     patient_id: str = Form(...),
     hospital_id: str = Form(...),
     branch_id: str = Form(...),
     palata_id: str = Form(...),
     file_base64: str = Form(...),
-    user: dict = Depends(get_current_user)
-):
+    user: dict = Depends(get_current_user),
+    ):
+
+    await check_permission(user, request)
+    
+    check_permission("process_patient_base64", user)  # Проверка доступа
+    
     """
     Эндпоинт для приёма base64-изображения вместо UploadFile
     """
@@ -251,9 +283,13 @@ async def process_patient_base64(
 
 @app.post("/compare-face-numpy/")
 async def compare_face(
+    request: Request,
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user)
-):
+    user: dict = Depends(get_current_user),
+    ):
+    
+    await check_permission(user, request)
+
     total_start_time = time.time()  # 🕒 Начало замера времени всей функции
 
     content = await file.read()
@@ -297,8 +333,14 @@ async def compare_face(
 
 # 🔹 API для сравнения лиц с базой
 @app.post("/compare-face-qr/")
-async def compare_face_with_db(file: UploadFile = File(...),
-                               user: dict = Depends(get_current_user)):
+async def compare_face_with_db(
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+    ):
+    
+    await check_permission(user, request)
+
     total_start_time = time.time()
 
     # Проверяем, загружены ли эмбеддинги
