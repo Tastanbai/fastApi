@@ -23,6 +23,7 @@ class AvailableAPIs(str, Enum):
     compare_face_qr = "compare-face-qr"
     process_patient = "process-patient"
     process_patient_base64 = "process-patient-base64"
+    get_face_data = "get-face-data"
 
 class RegisterUserSchema(BaseModel):
     username: str

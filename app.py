@@ -36,7 +36,6 @@ DB_CONFIG = {
 }
 
 
-
 async def check_permission(user: dict, request):
     """ Проверяет доступ пользователя к API """
     
@@ -398,15 +397,30 @@ async def compare_face_with_db(
     }
 
 
-
 # ✅ API для получения данных с фильтрацией по дате, hospital_id и patient_id
 @app.get("/get-face-data/")
 async def get_face_data(
+    request: Request,
     start_date: Optional[str] = Query(None, description="Начальная дата (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Конечная дата (YYYY-MM-DD)"),
     hospital_id: Optional[str] = Query(None, description="ID больницы"),
-    patient_id: Optional[str] = Query(None, description="ID пациента")
+    patient_id: Optional[str] = Query(None, description="ID пациента"),
+    user: dict = Depends(get_current_user),
 ):
+    await check_permission(user, request)
+
+    # ✅ Проверяем, что даты в правильном формате (если переданы)
+    def validate_date(date_str):
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Неверный формат даты: {date_str}. Используйте YYYY-MM-DD")
+
+    if start_date:
+        start_date = validate_date(start_date)
+    if end_date:
+        end_date = validate_date(end_date)
+
     try:
         with mysql.connector.connect(**DB_CONFIG) as conn:
             with conn.cursor(dictionary=True) as cursor:
@@ -416,7 +430,7 @@ async def get_face_data(
                 """
                 params = []
 
-                # Фильтрация по дате, hospital_id и patient_id
+                # ✅ Фильтрация по дате, hospital_id и patient_id
                 conditions = []
                 if start_date and end_date:
                     conditions.append("timestamp BETWEEN %s AND %s")
@@ -436,6 +450,7 @@ async def get_face_data(
                     conditions.append("patient_id = %s")
                     params.append(patient_id)
 
+                # ✅ Добавляем WHERE только если есть условия
                 if conditions:
                     query += " WHERE " + " AND ".join(conditions)
 
@@ -448,7 +463,6 @@ async def get_face_data(
 
     except mysql.connector.Error as e:
         return {"error": f"Ошибка при получении данных: {e}"}
-
 
 
 
