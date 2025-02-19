@@ -400,6 +400,7 @@ async def compare_face_with_db(
     }
 
 
+
 # ✅ API для получения данных с фильтрацией по дате, hospital_id и patient_id
 @app.get("/get-face-data/")
 async def get_face_data(
@@ -547,3 +548,4 @@ async def get_face_data(
 #         "similarity_percentage": float(similarity_percentage),
 #         "comparison_time": f"{comparison_time:.2f} seconds"
 #     }
+
