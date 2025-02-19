@@ -231,8 +231,6 @@ async def process_patient_base64(
 
     await check_permission(user, request)
     
-    check_permission("process_patient_base64", user)  # Проверка доступа
-    
     """
     Эндпоинт для приёма base64-изображения вместо UploadFile
     """
