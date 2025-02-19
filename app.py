@@ -2,7 +2,7 @@ import numpy as np
 import base64
 import mysql.connector
 from io import BytesIO
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Query
 import time
 from datetime import datetime
 import os
@@ -15,13 +15,12 @@ from auth import router as auth_router, get_current_user
 from register import router as register_router
 from fastapi import Request
 import json
+from typing import List, Optional
 
 app = FastAPI()
 
-
 app.include_router(auth_router)
 app.include_router(register_router)
-
 
 OUTPUT_FOLDER = "faces_folder"
 EMB_FOLDER = "emb"
@@ -35,6 +34,7 @@ DB_CONFIG = {
     "database": "face_db",
     "port": 3306
 }
+
 
 
 async def check_permission(user: dict, request):
@@ -53,64 +53,49 @@ async def check_permission(user: dict, request):
 
     raise HTTPException(status_code=403, detail=f"У вас нет доступа к API {api_name}")
 
-# Глобальная переменная для эмбеддингов
+
+
+# ✅ Глобальные переменные
 known_embeddings = []
 known_patients = []
+known_hospitals = []  # Добавляем hospital_id
 
-# 🔥 Функция загрузки эмбеддингов и patient_id из БД
+
+
+# ✅ Функция загрузки эмбеддингов, patient_id и hospital_id
 def load_embeddings_from_database():
-    global known_embeddings, known_patients
-    embeddings = []
-    patients = []
+    global known_embeddings, known_patients, known_hospitals
+    embeddings, patients, hospitals = [], [], []
 
     try:
         with mysql.connector.connect(**DB_CONFIG) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT patient_id, emb_path FROM faces")
+                cursor.execute("SELECT patient_id, hospital_id, emb_path FROM faces")
                 results = cursor.fetchall()
 
         for row in results:
-            patient_id, emb_file = row
+            patient_id, hospital_id, emb_file = row
             if os.path.exists(emb_file):
                 with open(emb_file, "rb") as file:
                     embeddings.append(pickle.load(file))
                     patients.append(patient_id)
+                    hospitals.append(hospital_id) 
             else:
                 print(f"⚠️ Файл {emb_file} отсутствует, пропускаем...")
 
     except mysql.connector.Error as e:
         print(f"❌ Ошибка при загрузке эмбеддингов из БД: {e}")
 
-    known_embeddings = embeddings  # Обновляем глобальный список эмбеддингов
-    known_patients = patients  # Обновляем список patient_id
+    # Обновляем глобальные переменные
+    known_embeddings[:] = embeddings
+    known_patients[:] = patients
+    known_hospitals[:] = hospitals  
 
 # 🔥 Загружаем эмбеддинги при старте сервера
 load_embeddings_from_database()
 
-# # Функция загрузки эмбеддингов (вызывается при каждом новом пациенте)
-# def load_embeddings_from_database():
-#     global known_embeddings
-#     embeddings = []
-#     try:
-#         with mysql.connector.connect(**DB_CONFIG) as conn:
-#             with conn.cursor() as cursor:
-#                 cursor.execute("SELECT emb_path FROM faces")
-#                 results = cursor.fetchall()
 
-#         for row in results:
-#             emb_file = row[0]
-#             if os.path.exists(emb_file):
-#                 with open(emb_file, "rb") as file:
-#                     embeddings.append(pickle.load(file))
-#             else:
-#                 print(f"⚠️ Файл {emb_file} отсутствует, пропускаем...")
-#     except mysql.connector.Error as e:
-#         print(f"❌ Ошибка при загрузке эмбеддингов из БД: {e}")
-    
-#     known_embeddings = embeddings  # Обновляем глобальный список
 
-# # 🔥 Загружаем эмбеддинги при старте сервера
-# load_embeddings_from_database()
 
 # 📌 API для добавления пациента и АВТОМАТИЧЕСКОГО ОБНОВЛЕНИЯ эмбеддингов
 @app.post("/process-patient/")
@@ -174,16 +159,11 @@ async def process_patient(
         "embedding_time": f"{embedding_time:.2f} seconds",
     }
 
-# 📌 API для сравнения лиц
 @app.post("/compare-face/")
 async def compare_face(
-    request: Request,
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
-    ):
-    
-    await check_permission(user, request)
-    
+):
+
     content = await file.read()
     unknown_image = face_recognition.load_image_file(BytesIO(content))
     start_time = time.time()
@@ -191,26 +171,52 @@ async def compare_face(
 
     if not unknown_face_encodings:
         raise HTTPException(status_code=400, detail="Лицо не найдено.")
-    
-   
+
     unknown_face_encoding = unknown_face_encodings[0]
 
     if not known_embeddings:
-        raise HTTPException(status_code=400, detail="Нет загруженных эмбеддингов для сравнения.")
+        raise HTTPException(status_code=400, detail="Нет загруженных эмбеддингов.")
 
-    # 🔥 Сравнение лиц без чтения файлов/базы (максимальная скорость)
-   
+    # ✅ Сравнение с известными лицами
     distances = face_recognition.face_distance(known_embeddings, unknown_face_encoding)
     min_distance = min(distances, default=1.0)
     similarity_percentage = (1 - min_distance) * 100
     comparison_time = time.time() - start_time
 
+    # ✅ Поиск ближайшего patient_id и hospital_id
+    matched_patient_id = None
+    matched_hospital_id = None
+    status = False
+
+    if similarity_percentage >= 65.0:
+        index = distances.argmin()
+        matched_patient_id = known_patients[index]
+        matched_hospital_id = known_hospitals[index]  
+
+        status = True
+
+    # ✅ Сохранение результата в MySQL
+    try:
+        with mysql.connector.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO faceData (patient_id, hospital_id, status, similarity_percentage, comparison_time, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    """,
+                    (matched_patient_id, matched_hospital_id, status, similarity_percentage, comparison_time)
+                )
+                conn.commit()
+    except mysql.connector.Error as e:
+        print(f"❌ Ошибка при записи в БД: {e}")
+
     return {
-        "status": bool(similarity_percentage >= 55.0),
+        "status": status,
+        "patient_id": matched_patient_id,
+        "hospital_id": matched_hospital_id,  # ✅ Добавляем hospital_id в ответ
         "similarity_percentage": float(similarity_percentage),
         "comparison_time": f"{comparison_time:.2f} seconds"
     }
-
 
 @app.post("/process-patient-base64/")
 async def process_patient_base64(
@@ -392,3 +398,152 @@ async def compare_face_with_db(
         "patient_id": patient_id,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if status else None,
     }
+
+
+# ✅ API для получения данных с фильтрацией по дате, hospital_id и patient_id
+@app.get("/get-face-data/")
+async def get_face_data(
+    start_date: Optional[str] = Query(None, description="Начальная дата (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="Конечная дата (YYYY-MM-DD)"),
+    hospital_id: Optional[str] = Query(None, description="ID больницы"),
+    patient_id: Optional[str] = Query(None, description="ID пациента")
+):
+    try:
+        with mysql.connector.connect(**DB_CONFIG) as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                query = """
+                SELECT id, patient_id, hospital_id, status, similarity_percentage, comparison_time, timestamp 
+                FROM faceData
+                """
+                params = []
+
+                # Фильтрация по дате, hospital_id и patient_id
+                conditions = []
+                if start_date and end_date:
+                    conditions.append("timestamp BETWEEN %s AND %s")
+                    params.extend([start_date + " 00:00:00", end_date + " 23:59:59"])
+                elif start_date:
+                    conditions.append("timestamp >= %s")
+                    params.append(start_date + " 00:00:00")
+                elif end_date:
+                    conditions.append("timestamp <= %s")
+                    params.append(end_date + " 23:59:59")
+
+                if hospital_id:
+                    conditions.append("hospital_id = %s")
+                    params.append(hospital_id)
+
+                if patient_id:
+                    conditions.append("patient_id = %s")
+                    params.append(patient_id)
+
+                if conditions:
+                    query += " WHERE " + " AND ".join(conditions)
+
+                query += " ORDER BY timestamp DESC"
+
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+
+        return {"count": len(results), "data": results}
+
+    except mysql.connector.Error as e:
+        return {"error": f"Ошибка при получении данных: {e}"}
+
+
+
+
+# 📌 API для сравнения лиц
+# @app.post("/compare-face/")
+# async def compare_face(
+#     request: Request,
+#     file: UploadFile = File(...),
+#     user: dict = Depends(get_current_user),
+#     ):
+    
+#     await check_permission(user, request)
+    
+#     content = await file.read()
+#     unknown_image = face_recognition.load_image_file(BytesIO(content))
+#     start_time = time.time()
+#     unknown_face_encodings = face_recognition.face_encodings(unknown_image)
+
+#     if not unknown_face_encodings:
+#         raise HTTPException(status_code=400, detail="Лицо не найдено.")
+    
+   
+#     unknown_face_encoding = unknown_face_encodings[0]
+
+#     if not known_embeddings:
+#         raise HTTPException(status_code=400, detail="Нет загруженных эмбеддингов для сравнения.")
+
+#     # 🔥 Сравнение лиц без чтения файлов/базы (максимальная скорость)
+   
+#     distances = face_recognition.face_distance(known_embeddings, unknown_face_encoding)
+#     min_distance = min(distances, default=1.0)
+#     similarity_percentage = (1 - min_distance) * 100
+#     comparison_time = time.time() - start_time
+
+#     return {
+#         "status": bool(similarity_percentage >= 55.0),
+#         "similarity_percentage": float(similarity_percentage),
+#         "comparison_time": f"{comparison_time:.2f} seconds"
+#     }
+
+
+# @app.post("/compare-face/")
+# async def compare_face(
+#     # request: Request,
+#     file: UploadFile = File(...),
+#     # user: dict = Depends(get_current_user),
+# ):
+#     # await check_permission(user, request)
+
+#     content = await file.read()
+#     unknown_image = face_recognition.load_image_file(BytesIO(content))
+#     start_time = time.time()
+#     unknown_face_encodings = face_recognition.face_encodings(unknown_image)
+
+#     if not unknown_face_encodings:
+#         raise HTTPException(status_code=400, detail="Лицо не найдено.")
+
+#     unknown_face_encoding = unknown_face_encodings[0]
+
+#     if not known_embeddings:
+#         raise HTTPException(status_code=400, detail="Нет загруженных эмбеддингов.")
+
+#     # ✅ Сравнение с известными лицами
+#     distances = face_recognition.face_distance(known_embeddings, unknown_face_encoding)
+#     min_distance = min(distances, default=1.0)
+#     similarity_percentage = (1 - min_distance) * 100
+#     comparison_time = time.time() - start_time
+
+#     # ✅ Поиск ближайшего patient_id
+#     matched_patient_id = None
+#     status = False
+#     if similarity_percentage >= 55.0:
+#         index = distances.argmin()  
+#         matched_patient_id = known_patients[index]
+#         status = True
+
+#     # ✅ Сохранение результата в MySQL
+#     try:
+#         with mysql.connector.connect(**DB_CONFIG) as conn:
+#             with conn.cursor() as cursor:
+#                 cursor.execute(
+#                     """
+#                     INSERT INTO faceData (patient_id, status, similarity_percentage, comparison_time, timestamp)
+#                     VALUES (%s, %s, %s, %s, NOW())
+#                     """,
+#                     (matched_patient_id, status, similarity_percentage, comparison_time)
+#                 )
+#                 conn.commit()
+#     except mysql.connector.Error as e:
+#         print(f"❌ Ошибка при записи в БД: {e}")
+
+#     return {
+#         "status": status,
+#         "patient_id": matched_patient_id,
+#         "similarity_percentage": float(similarity_percentage),
+#         "comparison_time": f"{comparison_time:.2f} seconds"
+#     }
